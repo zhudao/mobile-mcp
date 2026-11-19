@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { EventEmitter } from "node:events";
 
 import { MobileDevice } from "../src/mobile-device";
-import { ActionableError } from "../src/robot";
+import { ActionableError, ScreenshotOptions } from "../src/robot";
 
 function createMockMobileDevice(mockResponse: string): { device: MobileDevice; calls: string[][] } {
 	const device = new MobileDevice("test-device");
@@ -16,7 +16,41 @@ function createMockMobileDevice(mockResponse: string): { device: MobileDevice; c
 	return { device, calls };
 }
 
+// what mobilecli prints after a gesture went through
+const GESTURE_OK = JSON.stringify({ status: "ok" });
+
+// mobilecli releases that predate a command print their help and exit 0 instead of failing
+const HELP_FROM_AN_OLDER_MOBILECLI = "Perform input/output operations like tapping\n\nUsage:\n  mobilecli io [command]\n";
+
 test.describe("MobileDevice", () => {
+
+	test.describe("screenshot", () => {
+
+		const screenshotArgumentsFor = async (options: ScreenshotOptions): Promise<string[]> => {
+			const device = new MobileDevice("test-device");
+			const calls: string[][] = [];
+			(device as any).mobilecli.executeCommandBuffer = function(args: string[]): Buffer {
+				calls.push(args);
+				return Buffer.alloc(0);
+			};
+
+			await device.getScreenshot(options);
+			return calls[0];
+		};
+
+		test("getScreenshot should pass a rounded clip region to mobilecli", async () => {
+			const args = await screenshotArgumentsFor({ clip: { x: 60.4, y: 740, width: 864.6, height: 1000 } });
+
+			expect(args).toContain("--clip");
+			expect(args[args.indexOf("--clip") + 1]).toBe("60,740,865,1000");
+		});
+
+		test("getScreenshot should not clip when no region is given", async () => {
+			const args = await screenshotArgumentsFor({ maxSize: 512 });
+
+			expect(args).not.toContain("--clip");
+		});
+	});
 
 	test.describe("coordinate rounding", () => {
 
@@ -83,27 +117,41 @@ test.describe("MobileDevice", () => {
 			expect(calls[0]).toEqual(["io", "longpress", "@e5", "--duration", "800", "--device", "test-device"]);
 		});
 
-		test("doubleTapByRef should resolve the ref once and tap the element center twice", async () => {
-			const dump = { status: "ok", data: { elements: [
-				{ ref: "@e1", type: "Button", label: "+", rect: { x: 100, y: 200, width: 40, height: 60 } },
-			] } };
-			const { device, calls } = createMockMobileDevice(JSON.stringify(dump));
-			await device.doubleTapByRef("@e1");
+		test("doubleTap should send one native mobilecli io doubletap with rounded coordinates", async () => {
+			const { device, calls } = createMockMobileDevice(GESTURE_OK);
+			await device.doubleTap(119.6, 230.2);
 
-			expect(calls).toEqual([
-				["dump", "ui", "--device", "test-device"],
-				["io", "tap", "120,230", "--device", "test-device"],
-				["io", "tap", "120,230", "--device", "test-device"],
-			]);
+			expect(calls).toEqual([["io", "doubletap", "120,230", "--device", "test-device"]]);
 		});
 
-		test("doubleTapByRef should raise an actionable error for a ref that is not on screen", async () => {
-			const { device, calls } = createMockMobileDevice(JSON.stringify({ status: "ok", data: { elements: [] } }));
-			const pending = device.doubleTapByRef("@e9");
+		test("doubleTapByRef should pass the element ref to mobilecli io doubletap", async () => {
+			const { device, calls } = createMockMobileDevice(GESTURE_OK);
+			await device.doubleTapByRef("@e1");
 
-			await expect(pending).rejects.toThrow(ActionableError);
-			await expect(pending).rejects.toThrow(/@e9 was not found on the current screen/);
-			expect(calls).toEqual([["dump", "ui", "--device", "test-device"]]);
+			expect(calls).toEqual([["io", "doubletap", "@e1", "--device", "test-device"]]);
+		});
+
+		test("drag should send rounded coordinates to mobilecli io drag", async () => {
+			const { device, calls } = createMockMobileDevice(GESTURE_OK);
+			await device.drag({ x: 10.4, y: 20.6 }, { x: 300, y: 400 });
+
+			expect(calls).toEqual([["io", "drag", "10,21,300,400", "--device", "test-device"]]);
+		});
+
+		test("drag should accept element refs, mixed with coordinates", async () => {
+			const { device, calls } = createMockMobileDevice(GESTURE_OK);
+			await device.drag({ ref: "@e1" }, { ref: "@e2" });
+			await device.drag({ ref: "@e1" }, { x: 300, y: 400 });
+
+			expect(calls[0]).toEqual(["io", "drag", "@e1,@e2", "--device", "test-device"]);
+			expect(calls[1]).toEqual(["io", "drag", "@e1,300,400", "--device", "test-device"]);
+		});
+
+		test("drag should pass a rounded hold time when one is given", async () => {
+			const { device, calls } = createMockMobileDevice(GESTURE_OK);
+			await device.drag({ ref: "@e1" }, { ref: "@e2" }, 499.6);
+
+			expect(calls[0]).toEqual(["io", "drag", "@e1,@e2", "--hold", "500", "--device", "test-device"]);
 		});
 	});
 
@@ -169,6 +217,27 @@ test.describe("MobileDevice", () => {
 			const app = await device.getForegroundApp();
 
 			expect(app).toEqual({ appName: "Settings", packageName: "com.android.settings", activity: "com.android.settings.SubSettings" });
+		});
+	});
+
+	test.describe("gestures an older mobilecli does not know", () => {
+
+		test("doubleTap should fail instead of reporting a tap that never happened", async () => {
+			const { device } = createMockMobileDevice(HELP_FROM_AN_OLDER_MOBILECLI);
+
+			await expect(device.doubleTap(10, 20)).rejects.toThrow(ActionableError);
+		});
+
+		test("doubleTapByRef should fail instead of reporting a tap that never happened", async () => {
+			const { device } = createMockMobileDevice(HELP_FROM_AN_OLDER_MOBILECLI);
+
+			await expect(device.doubleTapByRef("@e1")).rejects.toThrow(ActionableError);
+		});
+
+		test("drag should fail instead of reporting a drag that never happened", async () => {
+			const { device } = createMockMobileDevice(HELP_FROM_AN_OLDER_MOBILECLI);
+
+			await expect(device.drag({ ref: "@e1" }, { ref: "@e2" })).rejects.toThrow(ActionableError);
 		});
 	});
 

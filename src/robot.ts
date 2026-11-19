@@ -58,12 +58,25 @@ export type Orientation = "portrait" | "landscape";
 
 export type FoldPosture = "folded" | "half-open" | "open";
 
+// a region of the screen, in screen coordinates
+export interface ClipRegion {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
 export interface ScreenshotOptions {
 	format?: "png" | "jpeg";
 	quality?: number;
 	scale?: number;
 	maxSize?: number;
+	// crop to this region before scaling. mobilecli only.
+	clip?: ClipRegion;
 }
+
+// a point on screen: either coordinates in pixels, or an element ref from the latest getElementsOnScreen (e.g. "@e5")
+export type GesturePoint = { x: number; y: number } | { ref: string };
 
 export interface Robot {
 	/**
@@ -184,7 +197,7 @@ export interface Robot {
 	tapByRef?(ref: string): Promise<void>;
 
 	/**
-	 * Tap on a specific coordinate on the screen.
+	 * Double tap on a specific coordinate on the screen.
 	 */
 	doubleTap(x: number, y: number): Promise<void>;
 
@@ -192,6 +205,12 @@ export interface Robot {
 	 * Double tap on the center of an element by its ref from the latest getElementsOnScreen (e.g. "@e5"). mobilecli only.
 	 */
 	doubleTapByRef?(ref: string): Promise<void>;
+
+	/**
+	 * Drag one finger from one point to another. Each point is a coordinate or an element ref. mobilecli only.
+	 * @param hold - How long the finger stays down before it moves, in milliseconds
+	 */
+	drag?(from: GesturePoint, to: GesturePoint, hold?: number): Promise<void>;
 
 	/**
 	 * Long press on a specific coordinate on the screen.
